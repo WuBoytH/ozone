@@ -9,7 +9,13 @@
 namespace exl::hook::nx64 {
 
     /* Size of stack to reserve for the context. Adjust this along with CTX_STACK_SIZE in inline_asm.s */
-    static constexpr int CtxStackSize = 0x100;
+    static constexpr int CtxStackSize = 0x300;
+    static_assert(sizeof(InlineCtx) == CtxStackSize, "InlineCtx does not match CTX_STACK_SIZE.");
+
+    /* Offset (relative to the SP at the hook site) where the entry's entrypoint stashes the
+     * original LR. The impl moves it into the ctx x30 slot and writes it back afterwards.
+     * Adjust this along with LR_BACKUP_OFFSET in inline_asm.s */
+    static constexpr int LrBackupOffset = -0x10;
 
     namespace reg = exl::armv8::reg;
     namespace inst = exl::armv8::inst;
@@ -59,8 +65,7 @@ namespace exl::hook::nx64 {
         /* Hook to call into the entry's entrypoint. Assign trampoline to be used by impl. */
         auto trampoline = Hook(hook, entryCb, true);
         /* Offset of LR before SP is moved. */
-        static constexpr int lrBackupOffset = int(offsetof(InlineCtx, m_Gpr.m_Lr)) - CtxStackSize;
-        static_assert(lrBackupOffset == -0x10, "InlineCtx is not ABI compatible.");
+        static constexpr int lrBackupOffset = LrBackupOffset;
 
         /* Construct entrypoint instructions. */
         auto impl = GetImpl();

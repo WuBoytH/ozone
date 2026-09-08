@@ -41,3 +41,24 @@ pub unsafe extern "C" fn skyline_tcp_send_raw(bytes: *const u8, size: usize) {
 pub unsafe extern "C" fn sky_memcpy(dest: *mut u8, src: *const u8, size: usize) -> u32 {
     sky_Memcpy(dest, src, size)
 }
+
+/// Program ID of the running process. Used by skyline-rs `skyline::info::get_program_id`
+/// (e.g. ARCropolis builds its chainloader NRR with it).
+#[no_mangle]
+pub extern "C" fn get_program_id() -> u64 {
+    horizon_svc::get_program_id()
+}
+
+/// Returns the memory range of the plugin containing `internal_addr`, or null/null if none.
+/// Used by skyline-rs `skyline::info::containing_plugin`.
+#[no_mangle]
+pub unsafe extern "C" fn get_plugin_addresses(internal_addr: *const u8, start: *mut *mut u8, end: *mut *mut u8) {
+    let (plugin_start, plugin_end) = crate::loader::containing_plugin(internal_addr as usize).unwrap_or((0, 0));
+
+    if !start.is_null() {
+        *start = plugin_start as _;
+    }
+    if !end.is_null() {
+        *end = plugin_end as _;
+    }
+}

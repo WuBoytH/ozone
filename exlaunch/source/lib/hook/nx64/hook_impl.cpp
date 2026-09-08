@@ -527,7 +527,7 @@ namespace exl::hook::nx64 {
 
         uint32_t i = __atomic_increase(&index);
         
-        if(i > HookMax)
+        if(i >= HookMax)
             return result::HookTrampolineAllocFail;
 
         HookPool* rwptr = (HookPool*)s_HookJit.GetRw();
