@@ -1,0 +1,8 @@
+[package]
+name = "pattern"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+thiserror = "1.0.30"
+lazysimd = "0.1.0"

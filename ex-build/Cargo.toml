@@ -1,0 +1,12 @@
+[package]
+name = "ex-build"
+version = "0.1.0"
+edition = "2018"
+authors = ["blujay"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+walkdir = "2.3.2"
+thiserror = "1.0.30"
+cc = { version = "1.0.73", features = ["parallel"] }

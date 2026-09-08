@@ -1,0 +1,4 @@
+[submodule "exlaunch"]
+	path = exlaunch
+	url = https://github.com/Raytwo/exlaunch
+	branch = skyline

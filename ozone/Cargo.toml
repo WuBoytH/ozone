@@ -1,0 +1,53 @@
+[package]
+name = "ozone"
+version = "0.1.0"
+edition = "2021"
+authors = ["Shadów", "blujay", "Raytwo"]
+
+[package.metadata.skyline]
+titleid = "0100DCD01525A000" # Persona 3 Portable
+custom-npdm = "packaged/exefs/main.npdm"
+
+[dependencies]
+skyline = "0.5.1"
+ozone_macro = { path = "./ozone_macro" }
+horizon-svc = { git = "https://github.com/skyline-rs/horizon-svc" } # We don't include the implementations because exlaunch already has them
+semver = { version = "1" }
+camino = "1"
+thiserror = "1.0.30"
+log = "0.4"
+multi_log = "0.1.2"
+pattern = { path = "crates/pattern" }
+lazysimd = "0.1.0"
+
+[build-dependencies]
+ex-build = { path = "../ex-build" }
+
+[features]
+tcp-logger = []
+sd-logger = []
+kernel-logger = []
+
+[lib]
+crate-type = ["cdylib"]
+
+# sometimes got compile errors I can't really explain
+# these settings work for me most of the time
+[profile.dev]
+# opt-level 0 breaks sometimes for me lol. 1 less rare. 3 is also comparable in terms of compile speed, but should be slower in theory.
+opt-level = 1
+# no idea if this breaks stuff more likely, turning it off just in case
+debug = false
+debug-assertions = false
+overflow-checks = false
+# lto-thin, reduces compile times. "off" breaks.
+lto = false
+panic = "abort"
+# faster for me, dunno if necessary, has some build errors where this was off *sometimes*.
+incremental = true
+
+[profile.release]
+panic = "abort"
+lto = "thin"
+strip = true
+# incremental = true
