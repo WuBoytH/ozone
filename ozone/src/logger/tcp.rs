@@ -7,14 +7,14 @@ pub struct TcpLogger(Sender<String>);
 
 impl TcpLogger {
     pub fn new() -> Self {
-        
+
         let (sender, receiver) = mpsc::channel::<String>();
 
         std::thread::Builder::new()
             .name("tcp-logger".into())
             .spawn(move || {
                 let pool = unsafe { memalign(0x1000, 0x100000) as *mut u8 };
-                
+
                 unsafe { nn::socket::Initialize(pool, 0x100000, 0x20000, 14) };
 
                 let listener = TcpListener::bind("0.0.0.0:6969").unwrap();

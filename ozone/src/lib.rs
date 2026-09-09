@@ -80,7 +80,7 @@ pub fn mount_rom_hook(name: *const c_char, buffer: *const u8, buf_size: usize) -
     let result = call_original!(name, buffer, buf_size);
 
     unsafe { nn::ro::Initialize(); }
-    
+
     if let Ok(read_dir) = std::fs::read_dir(format!("{}:/plugins/", mount_point)) {
         let files = read_dir
             .into_iter()
@@ -177,7 +177,7 @@ pub fn main() {
 
     let mut loggers: Vec<Box<dyn Log>> = vec![];
 
-    loggers.push(Box::new(logger::KernelLogger));
+    loggers.push(Box::new(logger::TcpLogger::new()));
 
     multi_log::MultiLogger::init(loggers, log::Level::Info).unwrap();
 
