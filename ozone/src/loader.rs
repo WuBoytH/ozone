@@ -4,9 +4,9 @@ use nn::ro::{NrrHeader, Module};
 use std::sync::Mutex;
 use thiserror::Error;
 
-/// (module_base, module_base + image size) for every plugin mounted by ozone.
-/// Backs the `get_plugin_addresses` export consumed by skyline-rs.
-static LOADED_PLUGINS: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+/// (name, module_base, module_base + image size) for every plugin mounted by ozone.
+/// Backs the `get_plugin_addresses` export consumed by skyline-rs and crash symbolisation.
+static LOADED_PLUGINS: Mutex<Vec<(String, usize, usize)>> = Mutex::new(Vec::new());
 
 /// Returns the (start, end) range of the mounted plugin that contains `addr`, if any.
 pub fn containing_plugin(addr: usize) -> Option<(usize, usize)> {
@@ -14,8 +14,18 @@ pub fn containing_plugin(addr: usize) -> Option<(usize, usize)> {
         .lock()
         .unwrap()
         .iter()
-        .copied()
-        .find(|(start, end)| *start <= addr && addr < *end)
+        .find(|(_, start, end)| *start <= addr && addr < *end)
+        .map(|(_, start, end)| (*start, *end))
+}
+
+/// Returns the plugin name and offset for `addr`. Uses `try_lock` so it is safe to
+/// call from the exception handler even if the fault happened while mounting.
+pub fn plugin_for_address(addr: usize) -> Option<(String, usize)> {
+    let plugins = LOADED_PLUGINS.try_lock().ok()?;
+    plugins
+        .iter()
+        .find(|(_, start, end)| *start <= addr && addr < *end)
+        .map(|(name, start, _)| (name.clone(), addr - *start))
 }
 
 macro_rules! align_up {
@@ -163,7 +173,7 @@ impl NroFile {
                 Err(LoaderError::MountError(rc))
             } else {
                 let base = (*module.ModuleObject).module_base as usize;
-                LOADED_PLUGINS.lock().unwrap().push((base, base + image_size));
+                LOADED_PLUGINS.lock().unwrap().push((name, base, base + image_size));
                 Ok(module)
             }
         }

@@ -18,7 +18,7 @@ pub unsafe extern "C" fn A64InlineHook(address: *const u8, callback: *const u8) 
 
 #[no_mangle]
 pub unsafe extern "C" fn getRegionAddress(region: Region) -> *const u8 {
-    let info = sky_GetModuleInfo(ModuleIndex::Main);
+    let info = sky_GetModuleInfo(ModuleIndex::Main as i32);
 
     match region {
         Region::Text => info.text.start,

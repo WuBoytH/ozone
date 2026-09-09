@@ -19,6 +19,7 @@ use crate::logger::{KernelLogger, TcpLogger};
 
 mod api;
 mod bootstrap;
+mod crash;
 mod loader;
 mod logger;
 mod old_api;
@@ -74,6 +75,8 @@ pub fn mount_rom_hook(name: *const c_char, buffer: *const u8, buf_size: usize) -
     let _ = unsafe { nn::fs::MountSdCardForDebug(skyline::c_str("sd\0")) };
 
     println!("[ozone] SD card mounted");
+
+    crash::on_sd_mounted();
 
     let mount_point = unsafe { CStr::from_ptr(name).to_str() }.unwrap();
 
@@ -180,6 +183,8 @@ pub fn main() {
     loggers.push(Box::new(logger::TcpLogger::new()));
 
     multi_log::MultiLogger::init(loggers, log::Level::Info).unwrap();
+
+    crash::install();
 
     skyline::install_hooks!(mount_rom_hook, socket_initialize_hook, socket_initialize_config_hook, ro_initialize_hook);
 

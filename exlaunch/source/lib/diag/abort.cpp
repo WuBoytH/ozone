@@ -20,7 +20,18 @@
 #include <algorithm>
 #include <atomic>
 
+/* Implemented in ozone (Rust). Logs the abort over TCP / to the SD before we die. */
+extern "C" void ozone_log_abort(const char *file, int line, const char *func, const char *expr, u64 value);
+
 namespace exl::diag {
+
+    static void LogAbort(const char *file, int line, const char *func, const char *expr, u64 value) {
+        /* Never recurse if the logger itself aborts. */
+        static std::atomic<bool> s_Logging;
+        if (s_Logging.exchange(true))
+            return;
+        ozone_log_abort(file, line, func, expr, value);
+    }
 
     void NORETURN NOINLINE AbortImpl(const AbortCtx & ctx) {
         #ifdef EXL_SUPPORTS_REBOOTPAYLOAD
@@ -53,6 +64,7 @@ namespace exl::diag {
 
     #define ABORT_WITH_VALUE(v)                             \
     {                                                       \
+        LogAbort(file, line, func, expr, (u64)(v));         \
         exl::diag::AbortCtx ctx {.m_Result = (Result)v};    \
         AbortImpl(ctx);                                     \
     }
@@ -66,5 +78,8 @@ namespace exl::diag {
 };
 
 /* C shim for libnx */
-extern "C" NORETURN void exl_abort(Result r) 
-    ABORT_WITH_VALUE(r)
+extern "C" NORETURN void exl_abort(Result r) {
+    exl::diag::LogAbort(NULL, 0, NULL, "exl_abort", (u64)r);
+    exl::diag::AbortCtx ctx {.m_Result = r};
+    exl::diag::AbortImpl(ctx);
+}
