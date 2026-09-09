@@ -81,7 +81,7 @@ pub fn mount_rom_hook(name: *const c_char, buffer: *const u8, buf_size: usize) -
 
     unsafe { nn::ro::Initialize(); }
 
-    if let Ok(read_dir) = std::fs::read_dir(format!("{}:/plugins/", mount_point)) {
+    if let Ok(read_dir) = std::fs::read_dir(format!("{}:/skyline/plugins/", mount_point)) {
         let files = read_dir
             .into_iter()
             .map(|cock| cock.unwrap())
