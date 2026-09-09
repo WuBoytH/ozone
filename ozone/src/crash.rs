@@ -13,7 +13,7 @@ use crate::api::memory::{sky_GetModuleInfo, s_ModuleCount};
 use crate::logger::TcpLogger;
 
 const HANDLER_STACK_SIZE: usize = 0x10000;
-const REPORT_PATH: &str = "sd:/ozone/crash_report.txt";
+const REPORT_PATH: &str = "sd:/ultimate/ozone/crash_report.txt";
 
 /// The frame nnSdk hands to the user exception handler.
 ///
@@ -67,7 +67,7 @@ pub fn install() {
 
 /// Called once the SD card is mounted: truncates the report file for this boot.
 pub fn on_sd_mounted() {
-    let _ = std::fs::create_dir_all("sd:/ozone");
+    let _ = std::fs::create_dir_all("sd:/ultimate/ozone");
     match std::fs::File::create(REPORT_PATH) {
         Ok(mut file) => {
             let _ = writeln!(file, "ozone crash report for this boot");
