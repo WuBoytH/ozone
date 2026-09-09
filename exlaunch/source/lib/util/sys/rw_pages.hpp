@@ -5,7 +5,7 @@
 #include <new>
 
 namespace exl::util {
-    
+
     class RwPages {
         NON_COPYABLE(RwPages);
         private:
@@ -24,7 +24,7 @@ namespace exl::util {
                 }
 
                 constexpr size_t GetAlignedSize() const {
-                    return ALIGN_UP(m_Size, PAGE_SIZE);
+                    return ALIGN_UP(m_Ro + m_Size, PAGE_SIZE) - GetAlignedRo();
                 }
 
                 constexpr ptrdiff_t RoToOffset(uintptr_t address) const {
@@ -77,10 +77,10 @@ namespace exl::util {
 
         public:
             RwPages(uintptr_t ro, size_t size);
-            
+
             /* Explicitly only allow moving. */
-            RwPages(RwPages&& other) 
-            : m_Claim(std::exchange(other.m_Claim, {})), 
+            RwPages(RwPages&& other)
+            : m_Claim(std::exchange(other.m_Claim, {})),
             m_Owner(std::exchange(other.m_Owner, false)) {}
             RwPages& operator=(RwPages&& other) {
                 m_Claim = std::exchange(other.m_Claim, {});
@@ -96,6 +96,6 @@ namespace exl::util {
             inline uintptr_t GetRw() const { return GetClaim().m_Rw; }
             inline uintptr_t GetSize() const{ return GetClaim().m_Size; }
 
-            ~RwPages();        
+            ~RwPages();
         };
 };
