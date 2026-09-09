@@ -57,6 +57,26 @@ pub struct NroFile {
     name: String,
 }
 
+fn u32_at(b: &[u8], off: usize) -> u32 {
+    u32::from_le_bytes(b[off..off + 4].try_into().unwrap())
+}
+
+fn nro_module_name(nro: &[u8]) -> Option<String> {
+    if &nro[0x10..0x14] != b"NRO0" {
+        return None;
+    }
+    // segment headers start at 0x20: text (0x20), rodata (0x28), data (0x30)
+    let ro_off = u32_at(nro, 0x28) as usize;
+    let ro_size = u32_at(nro, 0x2C) as usize;
+    let ro = nro.get(ro_off..ro_off + ro_size)?;
+
+    // .nx-module-name: u32 unk, u32 len, u8[len]
+    let len = u32_at(ro, 4) as usize;
+    let name = ro.get(8..8 + len)?;
+    let name = name.split(|&c| c == 0).next()?; // drop trailing NUL if present
+    Some(String::from_utf8_lossy(name).into_owned())
+}
+
 impl NroFile {
     pub fn open<P: AsRef<std::path::Path>>(path: P) -> Result<Self, LoaderError> {
         let path = path.as_ref();
@@ -67,7 +87,11 @@ impl NroFile {
     }
 
     pub fn from_slice<B: AsRef<[u8]>>(slice: B) -> Result<Self, LoaderError> {
-        Ok(Self { data: slice.as_ref().to_vec() , name: "plugin".into() })
+        // Ok(Self { data: slice.as_ref().to_vec() , name: "plugin".into() })
+        Ok(Self {
+            data: slice.as_ref().to_vec(),
+            name: nro_module_name(slice.as_ref()).unwrap_or_else(|| "plugin".to_string()) }
+        )
     }
 
     pub fn fix_bss_size(&mut self) {
@@ -123,7 +147,7 @@ impl NroFile {
         unsafe {
             let mut module: Module = std::mem::MaybeUninit::zeroed().assume_init();
             module.Name[0..name.len()].copy_from_slice(name.as_bytes());
-            
+
             let rc = nn::ro::LoadModule(
                 &mut module,
                 image as _,
@@ -172,14 +196,14 @@ impl NrrBuilder {
         self.0.dedup();
 
         let image_size = align_up!(std::mem::size_of::<nn::ro::NrrHeader>() + self.0.len() * std::mem::size_of::<Sha256Hash>(), 0x1000);
-        
+
         let (header, hashes) = unsafe {
             let layout = std::alloc::Layout::from_size_align(image_size, 0x1000).unwrap();
             let memory = std::alloc::alloc_zeroed(layout);
             (
                 &mut *(memory as *mut NrrHeader),
                 std::slice::from_raw_parts_mut(
-                    memory.add(std::mem::size_of::<NrrHeader>()) as *mut Sha256Hash, 
+                    memory.add(std::mem::size_of::<NrrHeader>()) as *mut Sha256Hash,
                     self.0.len()
                 )
             )
@@ -230,7 +254,7 @@ pub fn mount_plugins(plugins: impl Iterator<Item = NroFile>) -> Result<MountInfo
         .into_iter()
         .map(NroFile::mount)
         .collect();
-    
+
 
     Ok(MountInfo {
         modules,
