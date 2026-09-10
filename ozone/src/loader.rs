@@ -151,7 +151,7 @@ impl NroFile {
         let bss_layout = alloc::Layout::from_size_align(bss_size, 0x1000).unwrap();
 
         let bss_memory = unsafe {
-            alloc::alloc(layout)
+            alloc::alloc(bss_layout)
         };
 
         unsafe {
