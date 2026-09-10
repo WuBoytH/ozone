@@ -154,7 +154,7 @@ pub fn main(_: TokenStream, item: TokenStream) -> TokenStream {
 
         .section .rodata.module_name
         .word 0
-        .word 6
+        .word 5
         .ascii \"ozone\"
         .section .rodata.mod0
         .global _mod_header
