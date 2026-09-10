@@ -28,14 +28,30 @@ mod utils;
 
 static SOCKET_INIT: AtomicBool = AtomicBool::new(false);
 
+/// True for the call that must really initialize the socket library: the first one since boot
+/// or since the last `nn::socket::Finalize`. Atomic, because ozone's logger thread and the game
+/// race for the first initialization.
+fn socket_first_init() -> bool {
+    SOCKET_INIT.compare_exchange(false, true, SeqCst, SeqCst).is_ok()
+}
+
+fn socket_initialized(rc: i32) {
+    if rc == 0 {
+        TcpLogger::resume();
+    } else {
+        SOCKET_INIT.store(false, SeqCst);
+    }
+}
+
 #[skyline::hook(replace = nn::socket::Initialize)]
 pub fn socket_initialize_hook(pool: *mut u8, poolSize: usize, allocPoolSize: usize, concurLimit: i32) -> i32 {
-    if SOCKET_INIT.load(Relaxed) == false {
-        println!("[ozone] nn::socket::Initialize called for the first time");
-        SOCKET_INIT.store(true, SeqCst);
-        call_original!(pool, poolSize, allocPoolSize, concurLimit)
+    if socket_first_init() {
+        println!("[ozone] nn::socket::Initialize: initializing the socket library");
+        let rc = call_original!(pool, poolSize, allocPoolSize, concurLimit);
+        socket_initialized(rc);
+        rc
     } else {
-        // Pretend the operation was successful
+        // Already initialized (by ozone or by the game): pretend the operation was successful.
         println!("[ozone] nn::socket::Initialize dummied out");
         0
     }
@@ -43,16 +59,28 @@ pub fn socket_initialize_hook(pool: *mut u8, poolSize: usize, allocPoolSize: usi
 
 #[skyline::hook(replace = nn::socket::Initialize_Config)]
 pub fn socket_initialize_config_hook(pool: *mut u8) -> i32 {
-    if SOCKET_INIT.load(Relaxed) == false {
-        println!("[ozone] nn::socket::Initialize (Config) called for the first time");
-        SOCKET_INIT.store(true, SeqCst);
-        call_original!(pool)
+    if socket_first_init() {
+        println!("[ozone] nn::socket::Initialize (Config): initializing the socket library");
+        let rc = call_original!(pool);
+        socket_initialized(rc);
+        rc
     } else {
-        // Pretend the operation was successful
         println!("[ozone] nn::socket::Initialize (Config) dummied out");
-
         0
     }
+}
+
+/// The game finalizes the socket library when the console sleeps and initializes it again on
+/// wake. Ozone follows that lifecycle: the TCP logger closes its sockets first (nnSdk asserts if
+/// one of our calls is still pending when the library goes away, the
+/// real Finalize runs, and the next Initialize is let through and resumes the logger.
+#[skyline::hook(replace = nn::socket::Finalize)]
+pub fn socket_finalize_hook() -> i32 {
+    println!("[ozone] nn::socket::Finalize: closing the TCP logger's sockets first");
+    TcpLogger::suspend();
+    let rc = call_original!();
+    SOCKET_INIT.store(false, SeqCst);
+    rc
 }
 
 static RO_INIT: AtomicBool = AtomicBool::new(false);
@@ -112,7 +140,7 @@ pub fn mount_rom_hook(name: *const c_char, buffer: *const u8, buf_size: usize) -
                     match module.as_ref() {
                         Ok(plugin) => {
                             let mut symbol = 0usize;
-                            nn::ro::LookupModuleSymbol(&mut symbol, plugin, b"main\0".as_ptr());
+                            nn::ro::LookupModuleSymbol(&mut symbol, &**plugin, b"main\0".as_ptr());
                             let nul = plugin
                                 .Name
                                 .iter()
@@ -149,7 +177,7 @@ pub fn mount_rom_hook(name: *const c_char, buffer: *const u8, buf_size: usize) -
 pub fn main() {
     // Panic handler for Rust panics
     std::panic::set_hook(Box::new(|info| {
-        let location = info.location().unwrap();
+        let location = info.location().map(|l| l.to_string()).unwrap_or_default();
 
         let msg = match info.payload().downcast_ref::<&'static str>() {
             Some(s) => *s,
@@ -158,6 +186,9 @@ pub fn main() {
                 None => "Box<Any>",
             },
         };
+
+        // Kernel log first: it is the only sink that still works when the TCP logger is down.
+        let _ = horizon_svc::output_debug_string(&format!("[ozone] panic at {}: {}", location, msg));
 
         println!(
             "Ozone has panicked at '{}' with the following message: {}",
@@ -186,7 +217,7 @@ pub fn main() {
 
     crash::install();
 
-    skyline::install_hooks!(mount_rom_hook, socket_initialize_hook, socket_initialize_config_hook, ro_initialize_hook);
+    skyline::install_hooks!(mount_rom_hook, socket_initialize_hook, socket_initialize_config_hook, socket_finalize_hook, ro_initialize_hook);
 
     println!("Ozone is installed and running!");
 }

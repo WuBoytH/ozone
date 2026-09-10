@@ -32,7 +32,8 @@ pub unsafe extern "C" fn getRegionAddress(region: Region) -> *const u8 {
 #[no_mangle]
 pub unsafe extern "C" fn skyline_tcp_send_raw(bytes: *const u8, size: usize) {
     let slice = std::slice::from_raw_parts(bytes, size);
-    let string = std::str::from_utf8(slice).unwrap().to_owned();
+    // Lossy: a plugin printing invalid UTF-8 must not panic inside the logger.
+    let string = String::from_utf8_lossy(slice);
 
     info!("{}", string)
 }

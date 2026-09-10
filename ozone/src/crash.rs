@@ -1,5 +1,5 @@
 //! Crash diagnostics: a user exception handler (CPU faults, `brk` aborts) and a
-//! logging hook for exlaunch aborts. Reports go to `sd:/ozone/crash_report.txt`,
+//! logging hook for exlaunch aborts. Reports go to `sd:/ultimate/ozone/crash_report.txt`,
 //! the kernel debug log and the TCP logger, in that order of reliability.
 
 use std::fmt::Write as _;
@@ -84,9 +84,18 @@ pub fn on_sd_mounted() {
 /// still leaves the earlier ones on record.
 fn emit(chunk: &str) {
     if SD_READY.load(Ordering::SeqCst) {
-        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(REPORT_PATH) {
-            let _ = file.write_all(chunk.as_bytes());
-            let _ = file.flush();
+        // Not `append(true)`: that becomes O_APPEND, which nnSdk's libc layer rejects, and the
+        // report silently ended up empty (2026-09-09 22:30 crash). Open for writing and seek.
+        match std::fs::OpenOptions::new().write(true).open(REPORT_PATH) {
+            Ok(mut file) => {
+                use std::io::Seek as _;
+                let _ = file.seek(std::io::SeekFrom::End(0));
+                let _ = file.write_all(chunk.as_bytes());
+                let _ = file.sync_all();
+            },
+            Err(e) => {
+                let _ = horizon_svc::output_debug_string(&format!("[ozone] cannot open {}: {}", REPORT_PATH, e));
+            },
         }
     }
 

@@ -124,7 +124,12 @@ impl NroFile {
         Sha256Hash::new(&self.data)
     }
 
-    pub fn mount(self) -> Result<Module, LoaderError> {
+    /// Loads the NRO. The returned `Module` is leaked on purpose: nn::ro keeps referring to it
+    /// (and to the NRR `RegistrationInfo`) after the call, so both must stay at a fixed address
+    /// for the rest of the process. Returning them by value and dropping them later leaves nn::ro
+    /// with dangling list nodes that it writes through on the next module (un)load, which
+    /// corrupted a saved return address on the main thread.
+    pub fn mount(self) -> Result<&'static mut Module, LoaderError> {
         use std::alloc;
 
         let Self { data, name } = self;
@@ -154,12 +159,13 @@ impl NroFile {
             alloc::alloc(bss_layout)
         };
 
+        let module: &'static mut Module = Box::leak(Box::new(unsafe { std::mem::MaybeUninit::zeroed().assume_init() }));
+
         unsafe {
-            let mut module: Module = std::mem::MaybeUninit::zeroed().assume_init();
             module.Name[0..name.len()].copy_from_slice(name.as_bytes());
 
             let rc = nn::ro::LoadModule(
-                &mut module,
+                module,
                 image as _,
                 bss_memory as _,
                 bss_size as u64,
@@ -169,6 +175,7 @@ impl NroFile {
             if rc != 0 {
                 alloc::dealloc(image, layout);
                 alloc::dealloc(bss_memory, bss_layout);
+                drop(Box::from_raw(module));
 
                 Err(LoaderError::MountError(rc))
             } else {
@@ -182,8 +189,10 @@ impl NroFile {
 
 
 pub struct MountInfo {
-    pub modules: Vec<Result<Module, LoaderError>>,
-    pub registration_info: RegistrationInfo,
+    /// Leaked on purpose, see [`NroFile::mount`].
+    pub modules: Vec<Result<&'static mut Module, LoaderError>>,
+    /// Leaked on purpose, see [`NroFile::mount`].
+    pub registration_info: &'static mut RegistrationInfo,
 }
 
 pub struct NrrBuilder(Vec<Sha256Hash>);
@@ -247,16 +256,19 @@ pub fn mount_plugins(plugins: impl Iterator<Item = NroFile>) -> Result<MountInfo
 
         let header = nrr.build();
 
+        // nn::ro links the RegistrationInfo into its registration list, so it must never move
+        // or be freed (see `NroFile::mount`).
+        let nrr_info: &'static mut std::mem::MaybeUninit<RegistrationInfo> = Box::leak(Box::new(std::mem::MaybeUninit::uninit()));
         unsafe {
-            let mut nrr_info = std::mem::MaybeUninit::uninit();
             let rc = nn::ro::RegisterModuleInfo(nrr_info.as_mut_ptr(), header as *mut NrrHeader as _);
             if rc != 0 {
                 let layout = alloc::Layout::from_size_align(header.size as _, 0x1000).unwrap();
                 alloc::dealloc(header as *mut NrrHeader as _, layout);
+                drop(Box::from_raw(nrr_info));
                 return Err(LoaderError::RegistrationError(rc));
             }
             std::mem::forget(header);
-            nrr_info.assume_init()
+            nrr_info.assume_init_mut()
         }
     };
 
