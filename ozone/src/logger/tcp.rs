@@ -54,6 +54,7 @@ struct Client {
     bind_failure_reported: bool,
     backlog: VecDeque<String>,
     backlog_bytes: usize,
+    had_client: bool
 }
 
 static CLIENT: Mutex<Client> = Mutex::new(Client {
@@ -64,6 +65,7 @@ static CLIENT: Mutex<Client> = Mutex::new(Client {
     bind_failure_reported: false,
     backlog: VecDeque::new(),
     backlog_bytes: 0,
+    had_client: false
 });
 
 impl Client {
@@ -139,6 +141,9 @@ impl Client {
     }
 
     fn push_backlog(&mut self, message: String) {
+        if !self.had_client {
+            return;
+        }
         if message.len() > BACKLOG_LIMIT {
             return;
         }
@@ -155,6 +160,7 @@ impl Client {
     /// Replays the backlog to `stream` and makes it the current client. A previous client, if
     /// any, is dropped (and so closed).
     fn connect(&mut self, mut stream: TcpStream) {
+        self.had_client = true;
         while let Some(message) = self.backlog.pop_front() {
             self.backlog_bytes -= message.len();
             if let Err(err) = stream.write_all(message.as_bytes()) {
