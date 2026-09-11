@@ -43,6 +43,10 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// Consecutive `accept` failures before the listening socket is closed and bound again.
 const ACCEPT_FAILURES_BEFORE_REBIND: u32 = 5;
+/// Stack size of the accept and writer threads. std's default on this target is 2 MiB per
+/// thread, taken from the game's heap; these threads only make socket calls and format a few
+/// short diagnostics.
+const THREAD_STACK_SIZE: usize = 64 * 1024;
 
 struct Client {
     /// False between `nn::socket::Finalize` and the next `nn::socket::Initialize`: no socket
@@ -240,7 +244,8 @@ impl log::Log for TcpLogger {
 }
 
 fn spawn(name: &str, body: impl FnOnce() + Send + 'static) {
-    if let Err(err) = thread::Builder::new().name(name.into()).spawn(body) {
+    let builder = thread::Builder::new().name(name.into()).stack_size(THREAD_STACK_SIZE);
+    if let Err(err) = builder.spawn(body) {
         debug(&format!("[ozone] Could not start the {} thread: {}", name, err));
     }
 }
