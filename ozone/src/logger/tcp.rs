@@ -34,7 +34,7 @@ use skyline::{libc::memalign, nn};
 
 const PORT: u16 = 6969;
 /// Most bytes of log output kept while no client is connected.
-const BACKLOG_LIMIT: usize = 2 * 1024 * 1024;
+const BACKLOG_LIMIT: usize = 1 * 1024 * 1024;
 /// How long one write may block before the client is considered gone. Also bounds how long the
 /// `nn::socket::Finalize` hook may have to wait for the writer thread (best effort: ignored if
 /// the socket layer rejects `SO_SNDTIMEO`).
