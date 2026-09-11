@@ -21,10 +21,10 @@ namespace exl::setting {
      * so 4 MiB gives ~20k hooks. Skyline plugins (ARCropolis chainloads, HDR, ...)
      * install thousands of hooks, and the original 0x10000 (~327 hooks) aborted with
      * HookTrampolineAllocFail. */
-    constexpr size_t JitSize = 0x400000;
+    constexpr size_t JitSize = 0x100000;
 
     /* How large the area will be inline hook pool. Each entry is 24 bytes. */
-    constexpr size_t InlinePoolSize = 0x100000;
+    constexpr size_t InlinePoolSize = 0x80000;
 
     /* Sanity checks. */
     static_assert(ALIGN_UP(JitSize, PAGE_SIZE) == JitSize, "");
