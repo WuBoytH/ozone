@@ -47,6 +47,9 @@ pub enum LoaderError {
 
     #[error("Error retrieving buffer size: {0:#x}")]
     InvalidModuleBuffer(u32),
+
+    #[error("NRO file is empty")]
+    EmptyImage,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -62,8 +65,60 @@ impl Sha256Hash {
     }
 }
 
+/// A page-aligned, heap-allocated buffer. `nn::ro::LoadModule` requires the NRO image to be
+/// 0x1000-aligned, so the file is read straight into one of these and mapped in place: no
+/// intermediate `Vec` copies.
+pub struct AlignedImage {
+    ptr: std::ptr::NonNull<u8>,
+    layout: std::alloc::Layout,
+}
+
+impl AlignedImage {
+    const ALIGN: usize = 0x1000;
+
+    fn new(size: usize) -> Result<Self, LoaderError> {
+        if size == 0 {
+            return Err(LoaderError::EmptyImage);
+        }
+        let layout = std::alloc::Layout::from_size_align(size, Self::ALIGN).map_err(|_| LoaderError::EmptyImage)?;
+        // SAFETY: layout has a non-zero size.
+        let ptr = std::ptr::NonNull::new(unsafe { std::alloc::alloc(layout) })
+            .unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
+        Ok(Self { ptr, layout })
+    }
+
+    /// Gives up ownership; the memory is never freed (the module stays mapped for the rest of
+    /// the process).
+    fn into_raw(self) -> *mut u8 {
+        let ptr = self.ptr.as_ptr();
+        std::mem::forget(self);
+        ptr
+    }
+}
+
+impl std::ops::Deref for AlignedImage {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        // SAFETY: `ptr` points to `layout.size()` initialised bytes (filled by `NroFile::open`).
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.layout.size()) }
+    }
+}
+
+impl std::ops::DerefMut for AlignedImage {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.layout.size()) }
+    }
+}
+
+impl Drop for AlignedImage {
+    fn drop(&mut self) {
+        unsafe { std::alloc::dealloc(self.ptr.as_ptr(), self.layout) }
+    }
+}
+
 pub struct NroFile {
-    data: Vec<u8>,
+    image: AlignedImage,
     name: String,
 }
 
@@ -72,7 +127,7 @@ fn u32_at(b: &[u8], off: usize) -> u32 {
 }
 
 fn nro_module_name(nro: &[u8]) -> Option<String> {
-    if &nro[0x10..0x14] != b"NRO0" {
+    if nro.get(0x10..0x14)? != b"NRO0" {
         return None;
     }
     // segment headers start at 0x20: text (0x20), rodata (0x28), data (0x30)
@@ -81,35 +136,36 @@ fn nro_module_name(nro: &[u8]) -> Option<String> {
     let ro = nro.get(ro_off..ro_off + ro_size)?;
 
     // .nx-module-name: u32 unk, u32 len, u8[len]
-    let len = u32_at(ro, 4) as usize;
+    let len = u32_at(ro.get(..8)?, 4) as usize;
     let name = ro.get(8..8 + len)?;
     let name = name.split(|&c| c == 0).next()?; // drop trailing NUL if present
     Some(String::from_utf8_lossy(name).into_owned())
 }
 
 impl NroFile {
+    /// Reads the NRO at `path` directly into its final, page-aligned buffer.
     pub fn open<P: AsRef<std::path::Path>>(path: P) -> Result<Self, LoaderError> {
-        let path = path.as_ref();
-        std::fs::read(path)
-            .map(|data| Self { data, name: path.file_name().unwrap().to_string_lossy().to_string() })
-            // .map(|mut nro| { nro.fix_bss_size(); nro })
-            .map_err(Into::into)
-    }
+        use std::io::Read as _;
 
-    pub fn from_slice<B: AsRef<[u8]>>(slice: B) -> Result<Self, LoaderError> {
-        // Ok(Self { data: slice.as_ref().to_vec() , name: "plugin".into() })
-        Ok(Self {
-            data: slice.as_ref().to_vec(),
-            name: nro_module_name(slice.as_ref()).unwrap_or_else(|| "plugin".to_string()) }
-        )
+        let path = path.as_ref();
+        let mut file = std::fs::File::open(path)?;
+        let size = file.metadata()?.len() as usize;
+
+        let mut image = AlignedImage::new(size)?;
+        file.read_exact(&mut image)?;
+
+        let name = nro_module_name(&image)
+            .unwrap_or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "plugin".to_string()));
+
+        Ok(Self { image, name })
     }
 
     pub fn fix_bss_size(&mut self) {
         unsafe {
             // Get the mod header offset
-            let mod_header_offset = *(self.data.as_ptr().add(4) as *const u32);
+            let mod_header_offset = *(self.image.as_ptr().add(4) as *const u32);
 
-            let mod_header = self.data.as_mut_ptr().add(mod_header_offset as usize + 0x18) as *mut u32;
+            let mod_header = self.image.as_mut_ptr().add(mod_header_offset as usize + 0x18) as *mut u32;
 
             let bss_end_offset = *mod_header.add(3);
             let module_object_offset = *mod_header.add(7);
@@ -121,7 +177,7 @@ impl NroFile {
     }
 
     pub fn hash(&self) -> Sha256Hash {
-        Sha256Hash::new(&self.data)
+        Sha256Hash::new(&self.image)
     }
 
     /// Loads the NRO. The returned `Module` is leaked on purpose: nn::ro keeps referring to it
@@ -129,25 +185,20 @@ impl NroFile {
     /// for the rest of the process. Returning them by value and dropping them later leaves nn::ro
     /// with dangling list nodes that it writes through on the next module (un)load, which
     /// corrupted a saved return address on the main thread.
+    ///
+    /// The image buffer is mapped in place and leaked with the module.
     pub fn mount(self) -> Result<&'static mut Module, LoaderError> {
         use std::alloc;
 
-        let Self { data, name } = self;
+        let Self { image, name } = self;
 
-        let image_size = data.len();
-        let layout = alloc::Layout::from_size_align(image_size, 0x1000).unwrap();
-        let image = unsafe {
-            let memory = alloc::alloc(layout);
-            std::ptr::copy_nonoverlapping(data.as_ptr(), memory, data.len());
-            drop(data);
-            memory
-        };
+        let image_size = image.len();
 
         let bss_size = unsafe {
             let mut size = 0;
-            let rc = nn::ro::GetBufferSize(&mut size, image as _);
+            let rc = nn::ro::GetBufferSize(&mut size, image.as_ptr() as _);
             if rc != 0 {
-                alloc::dealloc(image, layout);
+                // `image` is freed on return.
                 return Err(LoaderError::InvalidModuleBuffer(rc));
             }
             size as usize
@@ -162,18 +213,20 @@ impl NroFile {
         let module: &'static mut Module = Box::leak(Box::new(unsafe { std::mem::MaybeUninit::zeroed().assume_init() }));
 
         unsafe {
-            module.Name[0..name.len()].copy_from_slice(name.as_bytes());
+            let name_len = name.len().min(module.Name.len() - 1);
+            module.Name[0..name_len].copy_from_slice(&name.as_bytes()[..name_len]);
 
+            let image_ptr = image.as_ptr();
             let rc = nn::ro::LoadModule(
                 module,
-                image as _,
+                image_ptr as _,
                 bss_memory as _,
                 bss_size as u64,
                 nn::ro::BindFlag_BindFlag_Lazy as i32
             );
 
             if rc != 0 {
-                alloc::dealloc(image, layout);
+                drop(image);
                 alloc::dealloc(bss_memory, bss_layout);
                 drop(Box::from_raw(module));
 
@@ -181,6 +234,7 @@ impl NroFile {
             } else {
                 let base = (*module.ModuleObject).module_base as usize;
                 LOADED_PLUGINS.lock().unwrap().push((name, base, base + image_size));
+                image.into_raw();
                 Ok(module)
             }
         }
@@ -267,7 +321,6 @@ pub fn mount_plugins(plugins: impl Iterator<Item = NroFile>) -> Result<MountInfo
                 drop(Box::from_raw(nrr_info));
                 return Err(LoaderError::RegistrationError(rc));
             }
-            std::mem::forget(header);
             nrr_info.assume_init_mut()
         }
     };

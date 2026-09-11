@@ -126,10 +126,16 @@ pub fn mount_rom_hook(name: *const c_char, buffer: *const u8, buf_size: usize) -
             .filter(|entry| {
                 entry.extension().unwrap().to_str() == Some("nro")
             })
-            .map(|entry| {
+            .filter_map(|entry| {
                 println!("Entry: {}", entry.display());
-                let file = std::fs::read(&entry).unwrap();
-                loader::NroFile::from_slice(&file).unwrap()
+                // Read once, straight into the page-aligned buffer the module is mapped from.
+                match loader::NroFile::open(entry) {
+                    Ok(nro) => Some(nro),
+                    Err(e) => {
+                        println!("[ozone] Could not read {}: {}", entry.display(), e);
+                        None
+                    },
+                }
             });
 
         let loader_results = loader::mount_plugins(nros);
