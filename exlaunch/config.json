@@ -1,9 +1,10 @@
 {
 	"name":	"Application",
-	"title_id":	"0x0100801011c3e000",
+	"title_id":	"0x01006a800016e000",
 	"title_id_range_min":	"0x0100000000010000",
 	"title_id_range_max":	"0x01ffffffffffffff",
 	"main_thread_stack_size":	"0x00100000",
+	"system_resource_size":	"0x01000000",
 	"main_thread_priority":	44,
 	"default_cpu_id":	0,
 	"process_category":	0,
@@ -12,19 +13,23 @@
 	"is_64_bit":	true,
 	"address_space_type":	3,
 	"filesystem_access":	{
-		"permissions":	"0xffffffffffffffff"
+		"permissions":	"0x4000000000200000"
 	},
-	"service_access":	["acc:u0", "aoc:u", "apm", "appletOE", "audin:u", "audout:u", "audren:u", "banana", "bcat:u", "bsd:u", "bsdcfg", "caps:su", "caps:u", "csrng", "friend:u", "fsp-srv", "hid", "htc", "htc:tenv", "htcs", "hwopus", "irs", "ldn:u", "ldr:ro", "lm", "mii:u", "mm:u", "nfc:mf:u", "nfc:user", "nfp:user", "nifm:u", "nim:eca", "nsd:u", "ntc", "nvdrv", "pcm", "pctl", "pl:u", "prepo:u", "set", "sfdnsres", "ssl", "time:u", "vi:u"],
+	"service_access":	[
+		"*"
+	],
 	"service_host":	[],
-	"kernel_capabilities":	[{
+	"kernel_capabilities":	[
+		{
 			"type":	"kernel_flags",
 			"value":	{
 				"highest_thread_priority":	59,
 				"lowest_thread_priority":	28,
 				"lowest_cpu_id":	0,
-				"highest_cpu_id":	2
+				"highest_cpu_id":	3
 			}
-		}, {
+		},
+		{
 			"type":	"syscalls",
 			"value":	{
 				"svcUnknown":	"0x00",
@@ -81,25 +86,14 @@
 				"svcGetThreadContext3":	"0x33",
 				"svcWaitForAddress":	"0x34",
 				"svcSignalToAddress":	"0x35",
-				"svcSynchronizePreemptionState":	"0x36",
-				"svcGetResourceLimitPeakValue":	"0x37",
-				"svcUnknown":	"0x38",
-				"svcCreateIoPool":	"0x39",
-				"svcCreateIoRegion":	"0x3a",
-				"svcUnknown":	"0x3b",
 				"svcDumpInfo":	"0x3c",
-				"svcKernelDebug":	"0x3c",
 				"svcChangeKernelTraceState":	"0x3d",
-				"svcUnknown":	"0x3e",
-				"svcUnknown":	"0x3f",
 				"svcCreateSession":	"0x40",
 				"svcAcceptSession":	"0x41",
 				"svcReplyAndReceiveLight":	"0x42",
 				"svcReplyAndReceive":	"0x43",
 				"svcReplyAndReceiveWithUserBuffer":	"0x44",
 				"svcCreateEvent":	"0x45",
-				"svcMapIoRegion":	"0x46",
-				"svcUnmapIoRegion":	"0x47",
 				"svcMapPhysicalMemoryUnsafe":	"0x48",
 				"svcUnmapPhysicalMemoryUnsafe":	"0x49",
 				"svcSetUnsafeLimit":	"0x4a",
@@ -138,7 +132,6 @@
 				"svcWriteDebugProcessMemory":	"0x6b",
 				"svcSetHardwareBreakPoint":	"0x6c",
 				"svcGetDebugThreadParam":	"0x6d",
-				"svcUnknown":	"0x6e",
 				"svcGetSystemInfo":	"0x6f",
 				"svcCreatePort":	"0x70",
 				"svcManageNamedPort":	"0x71",
@@ -157,20 +150,25 @@
 				"svcSetResourceLimitLimitValue":	"0x7e",
 				"svcCallSecureMonitor":	"0x7f"
 			}
-		}, {
+		},
+		{
 			"type":	"application_type",
 			"value":	1
-		}, {
+		},
+		{
 			"type":	"min_kernel_version",
 			"value":	"0x0091"
-		}, {
+		},
+		{
 			"type":	"handle_table_size",
 			"value":	512
-		}, {
+		},
+		{
 			"type":	"debug_flags",
 			"value":	{
-				"allow_debug":	false,
-				"force_debug":	true
+				"allow_debug":	true,
+				"force_debug":	false
 			}
-		}]
+		}
+	]
 }
