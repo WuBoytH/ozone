@@ -107,12 +107,14 @@ pub fn mount_rom_hook(name: *const c_char, buffer: *const u8, buf_size: usize) -
     crash::on_sd_mounted();
 
     let mount_point = unsafe { CStr::from_ptr(name).to_str() }.unwrap();
+    println!("{}", mount_point);
 
     let result = call_original!(name, buffer, buf_size);
 
     unsafe { nn::ro::Initialize(); }
 
     if let Ok(read_dir) = std::fs::read_dir(format!("{}:/skyline/plugins/", mount_point)) {
+        println!("[ozone] Plugins folder found, listing:");
         let files = read_dir
             .into_iter()
             .map(|cock| cock.unwrap())
@@ -120,6 +122,7 @@ pub fn mount_rom_hook(name: *const c_char, buffer: *const u8, buf_size: usize) -
             .map(|idk| {
                 idk.path()
             }).collect::<Vec<_>>();
+        println!("{:#?}", files);
 
         let nros = files
             .iter()
