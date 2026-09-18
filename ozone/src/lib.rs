@@ -127,7 +127,12 @@ pub fn mount_rom_hook(name: *const c_char, buffer: *const u8, buf_size: usize) -
         let nros = files
             .iter()
             .filter(|entry| {
-                entry.extension().unwrap().to_str() == Some("nro")
+                if let Some(extension) = entry.extension() {
+                    extension.to_str() == Some("nro")
+                }
+                else {
+                    false
+                }
             })
             .filter_map(|entry| {
                 println!("Entry: {}", entry.display());
