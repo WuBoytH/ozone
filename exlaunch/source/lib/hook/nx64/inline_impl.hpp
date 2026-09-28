@@ -49,8 +49,12 @@ namespace exl::hook::nx64 {
         float m_Float[4];
     };
 
-    /* Layout must match skyline-rs `InlineCtx` and CTX_STACK_SIZE in inline_asm.s:
-     *   0x000 x0..x30, 0x0F8 sp, 0x100 q0..q31 (0x300 bytes total). */
+    /* Layout must match CTX_STACK_SIZE in inline_asm.s. The first 0x300 bytes are the
+     * skyline-rs `InlineCtx` ABI (0x000 x0..x30, 0x0F8 sp, 0x100 q0..q31); the fields after
+     * that are ozone-only and invisible to skyline plugins, which only see the 0x300-byte prefix.
+     *   0x300 nzcv      condition flags at the hook site. Written back to NZCV after the
+     *                   callback, so a callback may change them deliberately.
+     *   0x308 lr backup scratch slot used by the entry's entrypoint (LrBackupOffset). */
     struct InlineCtx {
         union {
             /* Accessors are union'd with the gprs so that they can be accessed directly. */
@@ -60,11 +64,15 @@ namespace exl::hook::nx64 {
         };
         u64 m_Sp;
         VectorRegister m_Fpr[32];
+        u64 m_Nzcv;
+        u64 m_LrBackup;
     };
-    static_assert(sizeof(InlineCtx) == 0x300, "InlineCtx must be 0x300 bytes (skyline-rs ABI).");
+    static_assert(sizeof(InlineCtx) == 0x310, "InlineCtx must be 0x310 bytes (CTX_STACK_SIZE).");
     static_assert(offsetof(InlineCtx, m_Gpr.m_Lr) == 0xF0, "");
     static_assert(offsetof(InlineCtx, m_Sp) == 0xF8, "");
     static_assert(offsetof(InlineCtx, m_Fpr) == 0x100, "");
+    static_assert(offsetof(InlineCtx, m_Nzcv) == 0x300, "");
+    static_assert(offsetof(InlineCtx, m_LrBackup) == 0x308, "");
 
     void InitializeInline();
 }

@@ -12,22 +12,26 @@
 .endm
 
 /* Size of stack to reserve for the context. Adjust this along with CtxStackSize in inline_impl.cpp */
-.set CTX_STACK_SIZE, 0x300
+.set CTX_STACK_SIZE, 0x310
 
 /* Offset (relative to the original SP) where the entry's entrypoint stashes the original LR.
-   Keep in sync with lrBackupOffset in inline_impl.cpp. */
-.set LR_BACKUP_OFFSET, -0x10
+   Keep in sync with LrBackupOffset in inline_impl.cpp. */
+.set LR_BACKUP_OFFSET, -0x8
+
+/* Offset (relative to the context) of the saved NZCV flags. Keep in sync with InlineCtx::m_Nzcv. */
+.set NZCV_OFFSET, 0x300
 
 /*
- * Context layout (matches skyline-rs `InlineCtx`, 0x300 bytes):
+ * Context layout (the first 0x300 bytes match skyline-rs `InlineCtx`):
  *   0x000  x0..x30   (x30 = original LR at the hook site)
  *   0x0F8  sp        (original SP)
  *   0x100  q0..q31
+ *   0x300  nzcv      (condition flags at the hook site; restored before returning)
+ *   0x308  original LR scratch slot written by the entry's entrypoint ([orig_sp + LR_BACKUP_OFFSET])
  *
- * The entry's entrypoint stores the original LR at [orig_sp + LR_BACKUP_OFFSET], which is
- * [ctx + 0x2F0] after the frame is pushed. That slot is later overwritten by the q31 save,
- * so it has to be moved into the x30 slot first (and written back after the callback so
- * the entrypoint's LDUR picks up any change the callback made).
+ * The entry's entrypoint stores the original LR at [orig_sp + LR_BACKUP_OFFSET]. It is copied
+ * into the x30 slot so the callback sees it, and written back after the callback so the
+ * entrypoint's LDUR picks up any change the callback made.
  */
 .macro armBackupRegisters
     sub sp, sp, CTX_STACK_SIZE
@@ -51,6 +55,10 @@
     ldr x0, [sp, #(CTX_STACK_SIZE + LR_BACKUP_OFFSET)]
     add x1, sp, CTX_STACK_SIZE
     stp x0, x1, [sp, #0xF0]
+
+    /* Condition flags. Nothing above this point modifies them (sub/add/stp/ldr do not set flags). */
+    mrs x0, nzcv
+    str x0, [sp, #NZCV_OFFSET]
 
     stp  q0,  q1, [sp, #0x100]
     stp  q2,  q3, [sp, #0x120]
@@ -90,9 +98,14 @@
     ldp q28, q29, [sp, #0x2C0]
     ldp q30, q31, [sp, #0x2E0]
 
-    /* Write the x30 slot back to the entrypoint's LR backup slot (q31 is already reloaded). */
+    /* Write the x30 slot back to the entrypoint's LR backup slot. */
     ldr x0, [sp, #0xF0]
     str x0, [sp, #(CTX_STACK_SIZE + LR_BACKUP_OFFSET)]
+
+    /* Restore the condition flags. Everything after this (ldp/add sp/ret, the entrypoint's
+       ldur/b, and the relocated original instruction) leaves NZCV untouched. */
+    ldr x0, [sp, #NZCV_OFFSET]
+    msr nzcv, x0
 
     ldp x0, x1, [sp, #0x00]
     ldp x2, x3, [sp, #0x10]
