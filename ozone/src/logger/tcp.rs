@@ -16,11 +16,18 @@
 //! `skyline_tcp_send_raw`), and so do the panic hook and the crash handler. A panic here
 //! panics again while the panic is being printed, without bound; a dead channel turns every
 //! log line in the process into such a panic.
+//!
+//! Sockets go through the nn::socket C API ([`Socket`]), not `std::net`. On this target std
+//! builds a failed call's error from its return value, which nnSdk sets to -1, so every error
+//! reads "os error 1" and a non-blocking accept never reports `WouldBlock`. std also closes
+//! with libc `close`, which nnSdk ignores for socket descriptors. Together that leaked one
+//! socket per rebind until the process ran out of them.
 
 use std::{
     collections::VecDeque,
-    io::{ErrorKind, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
+    ffi::c_void,
+    mem::size_of,
+    net::{Ipv4Addr, SocketAddrV4},
     sync::{
         mpsc::{self, Receiver, Sender},
         Mutex, MutexGuard,
@@ -48,12 +55,121 @@ const ACCEPT_FAILURES_BEFORE_REBIND: u32 = 5;
 /// short diagnostics.
 const THREAD_STACK_SIZE: usize = 64 * 1024;
 
+/// An errno from nn::socket.
+type Errno = i32;
+const EAGAIN: Errno = 11;
+
+const AF_INET: i32 = 2;
+const SOCK_STREAM: i32 = 1;
+const SOL_SOCKET: i32 = 0xffff;
+const SO_REUSEADDR: i32 = 0x4;
+const SO_SNDTIMEO: i32 = 0x1005;
+const IPPROTO_TCP: i32 = 6;
+const TCP_NODELAY: i32 = 1;
+const F_GETFL: i32 = 3;
+const F_SETFL: i32 = 4;
+const O_NONBLOCK: i32 = 0x800;
+
+#[repr(C)]
+#[derive(Default)]
+struct SockAddrIn {
+    len: u8,
+    family: u8,
+    /// Network byte order.
+    port: u16,
+    addr: [u8; 4],
+    zero: [u8; 8],
+}
+
+#[repr(C)]
+struct TimeVal {
+    sec: i64,
+    usec: i64,
+}
+
+extern "C" {
+    fn nnsocketSocket(domain: i32, kind: i32, protocol: i32) -> i32;
+    fn nnsocketBind(fd: i32, addr: *const SockAddrIn, len: u32) -> i32;
+    fn nnsocketListen(fd: i32, backlog: i32) -> i32;
+    fn nnsocketAccept(fd: i32, addr: *mut SockAddrIn, len: *mut u32) -> i32;
+    fn nnsocketFcntl(fd: i32, cmd: i32, ...) -> i32;
+    fn nnsocketSetSockOpt(fd: i32, level: i32, name: i32, value: *const c_void, len: u32) -> i32;
+    fn nnsocketSend(fd: i32, buffer: *const c_void, len: usize, flags: i32) -> isize;
+    fn nnsocketClose(fd: i32) -> i32;
+    fn nnsocketGetLastErrno() -> Errno;
+}
+
+/// Maps nn::socket's -1 to the calling thread's errno.
+fn check(ret: i32) -> Result<i32, Errno> {
+    if ret < 0 {
+        Err(unsafe { nnsocketGetLastErrno() })
+    } else {
+        Ok(ret)
+    }
+}
+
+/// A socket descriptor, closed through nn::socket when dropped.
+struct Socket(i32);
+
+impl Socket {
+    /// A TCP socket listening on `port` on every interface.
+    fn listen(port: u16) -> Result<Socket, Errno> {
+        let socket = Socket(check(unsafe { nnsocketSocket(AF_INET, SOCK_STREAM, 0) })?);
+        // A client connection left in TIME_WAIT must not hold the port against the next bind.
+        socket.set_opt(SOL_SOCKET, SO_REUSEADDR, &1i32)?;
+        let addr = SockAddrIn {
+            len: size_of::<SockAddrIn>() as u8,
+            family: AF_INET as u8,
+            port: port.to_be(),
+            ..Default::default()
+        };
+        check(unsafe { nnsocketBind(socket.0, &addr, size_of::<SockAddrIn>() as u32) })?;
+        check(unsafe { nnsocketListen(socket.0, 128) })?;
+        Ok(socket)
+    }
+
+    fn accept(&self) -> Result<(Socket, SocketAddrV4), Errno> {
+        let mut addr = SockAddrIn::default();
+        let mut len = size_of::<SockAddrIn>() as u32;
+        let fd = check(unsafe { nnsocketAccept(self.0, &mut addr, &mut len) })?;
+        Ok((Socket(fd), SocketAddrV4::new(Ipv4Addr::from(addr.addr), u16::from_be(addr.port))))
+    }
+
+    fn set_nonblocking(&self, nonblocking: bool) -> Result<(), Errno> {
+        let flags = check(unsafe { nnsocketFcntl(self.0, F_GETFL) })?;
+        let flags = if nonblocking { flags | O_NONBLOCK } else { flags & !O_NONBLOCK };
+        check(unsafe { nnsocketFcntl(self.0, F_SETFL, flags) }).map(drop)
+    }
+
+    fn set_opt<T>(&self, level: i32, name: i32, value: &T) -> Result<(), Errno> {
+        let value = value as *const T as *const c_void;
+        check(unsafe { nnsocketSetSockOpt(self.0, level, name, value, size_of::<T>() as u32) }).map(drop)
+    }
+
+    fn send_all(&self, mut bytes: &[u8]) -> Result<(), Errno> {
+        while !bytes.is_empty() {
+            let sent = unsafe { nnsocketSend(self.0, bytes.as_ptr() as *const c_void, bytes.len(), 0) };
+            if sent < 0 {
+                return Err(unsafe { nnsocketGetLastErrno() });
+            }
+            bytes = &bytes[sent as usize..];
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Socket {
+    fn drop(&mut self) {
+        unsafe { nnsocketClose(self.0) };
+    }
+}
+
 struct Client {
     /// False between `nn::socket::Finalize` and the next `nn::socket::Initialize`: no socket
     /// call may be made.
     enabled: bool,
-    listener: Option<TcpListener>,
-    stream: Option<TcpStream>,
+    listener: Option<Socket>,
+    stream: Option<Socket>,
     accept_failures: u32,
     bind_failure_reported: bool,
     backlog: VecDeque<String>,
@@ -80,11 +196,11 @@ impl Client {
         if self.listener.is_some() {
             return;
         }
-        match TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], PORT))) {
+        match Socket::listen(PORT) {
             Ok(listener) => {
                 if let Err(err) = listener.set_nonblocking(true) {
                     // A blocking accept would hold the lock forever; better no logger.
-                    debug(&format!("[ozone] TCP log listener cannot be made non-blocking, logger disabled: {}", err));
+                    debug(&format!("[ozone] TCP log listener cannot be made non-blocking, logger disabled: errno {}", err));
                     self.enabled = false;
                     return;
                 }
@@ -94,7 +210,7 @@ impl Client {
             },
             Err(err) => {
                 if !self.bind_failure_reported {
-                    debug(&format!("[ozone] Could not bind the TCP log port {}: {}", PORT, err));
+                    debug(&format!("[ozone] Could not bind the TCP log port {}: errno {}", PORT, err));
                     self.bind_failure_reported = true;
                 }
             },
@@ -109,17 +225,18 @@ impl Client {
                 self.accept_failures = 0;
                 // Accepted sockets may inherit the listener's non-blocking mode on BSD.
                 let _ = stream.set_nonblocking(false);
-                let _ = stream.set_nodelay(true);
-                let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
+                let _ = stream.set_opt(IPPROTO_TCP, TCP_NODELAY, &1i32);
+                let timeout = TimeVal { sec: WRITE_TIMEOUT.as_secs() as i64, usec: WRITE_TIMEOUT.subsec_micros() as i64 };
+                let _ = stream.set_opt(SOL_SOCKET, SO_SNDTIMEO, &timeout);
                 debug(&format!("[ozone] TCP log client connected from {}", peer));
                 self.connect(stream);
             },
-            Err(err) if err.kind() == ErrorKind::WouldBlock => {},
+            Err(EAGAIN) => {},
             Err(err) => {
                 // Seen when the network goes away (sleep, connection loss): the socket layer may
                 // keep failing, so recreate the listener after a few attempts.
                 self.accept_failures += 1;
-                debug(&format!("[ozone] TCP log accept failed ({}/{}): {}", self.accept_failures, ACCEPT_FAILURES_BEFORE_REBIND, err));
+                debug(&format!("[ozone] TCP log accept failed ({}/{}): errno {}", self.accept_failures, ACCEPT_FAILURES_BEFORE_REBIND, err));
                 if self.accept_failures >= ACCEPT_FAILURES_BEFORE_REBIND {
                     self.listener = None;
                     self.accept_failures = 0;
@@ -130,11 +247,11 @@ impl Client {
 
     /// Sends `message` to the connected client, or keeps it for the next one.
     fn write(&mut self, message: String) {
-        if let Some(stream) = self.stream.as_mut() {
-            match stream.write_all(message.as_bytes()) {
+        if let Some(stream) = self.stream.as_ref() {
+            match stream.send_all(message.as_bytes()) {
                 Ok(()) => return,
                 Err(err) => {
-                    debug(&format!("[ozone] TCP log client lost: {}", err));
+                    debug(&format!("[ozone] TCP log client lost: errno {}", err));
                     self.stream = None;
                 },
             }
@@ -158,11 +275,11 @@ impl Client {
 
     /// Replays the backlog to `stream` and makes it the current client. A previous client, if
     /// any, is dropped (and so closed).
-    fn connect(&mut self, mut stream: TcpStream) {
+    fn connect(&mut self, stream: Socket) {
         while let Some(message) = self.backlog.pop_front() {
             self.backlog_bytes -= message.len();
-            if let Err(err) = stream.write_all(message.as_bytes()) {
-                debug(&format!("[ozone] TCP log client lost while replaying backlog: {}", err));
+            if let Err(err) = stream.send_all(message.as_bytes()) {
+                debug(&format!("[ozone] TCP log client lost while replaying backlog: errno {}", err));
                 // Keep it for the next client.
                 self.backlog_bytes += message.len();
                 self.backlog.push_front(message);
@@ -211,8 +328,8 @@ impl TcpLogger {
         if !client.enabled {
             return false;
         }
-        let Some(stream) = client.stream.as_mut() else { return false };
-        match stream.write_all(message.as_bytes()).and_then(|_| stream.flush()) {
+        let Some(stream) = client.stream.as_ref() else { return false };
+        match stream.send_all(message.as_bytes()) {
             Ok(()) => true,
             Err(_) => {
                 client.stream = None;
@@ -259,8 +376,8 @@ fn writer_loop(receiver: Receiver<String>) {
 fn accept_loop() {
     // Goes through `socket_initialize_hook`: performs the real initialization unless the game
     // got there first, in which case it is a no-op and the game's configuration is in force.
-    let pool = unsafe { memalign(0x1000, 0x100000) as *mut u8 };
-    let rc = unsafe { nn::socket::Initialize(pool, 0x100000, 0x20000, 14) };
+    let pool = unsafe { memalign(0x1000, 0x600000) as *mut u8 };
+    let rc = unsafe { nn::socket::Initialize(pool, 0x600000, 0x20000, 14) };
     if rc != 0 {
         debug(&format!("[ozone] nn::socket::Initialize returned {:#x}", rc));
     }
