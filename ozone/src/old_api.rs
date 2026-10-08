@@ -4,6 +4,18 @@ use crate::api::{hooks::*, memory::*};
 
 #[no_mangle]
 pub unsafe extern "C" fn A64HookFunction(symbol: *const u8, replace: *const u8, result: *mut *mut u8) {
+    // Diagnostic (disabled): which function is being hooked, by whom, and what the relocator is
+    // about to read there. `symbol` is dereferenced before the hook engine does the same, so a
+    // bogus target faults here with a clear PC instead of inside `__fix_instructions`.
+    // let words = if symbol.is_null() { &[][..] } else { std::slice::from_raw_parts(symbol as *const u32, 5) };
+    // println!(
+    //     "[ozone] A64HookFunction: {} -> {}{} words {:08x?}",
+    //     crate::crash::annotate(symbol as u64),
+    //     crate::crash::annotate(replace as u64),
+    //     if result.is_null() { " (no trampoline)" } else { "" },
+    //     words
+    // );
+
     let ret = sky_Hook(symbol as _, replace as _, !result.is_null());
 
     if !result.is_null() {

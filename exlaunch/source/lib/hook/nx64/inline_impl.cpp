@@ -63,7 +63,8 @@ namespace exl::hook::nx64 {
         /* Get pointer to entry's entrypoint. */
         uintptr_t entryCb = reinterpret_cast<uintptr_t>(&entryRx->m_CbEntry);
         /* Hook to call into the entry's entrypoint. Assign trampoline to be used by impl. */
-        auto trampoline = Hook(hook, entryCb, true);
+        /* Inline sites are mid-function: replace a single instruction whenever the entry is in B range. */
+        auto trampoline = Hook(hook, entryCb, true, true);
         /* Offset of LR before SP is moved. */
         static constexpr int lrBackupOffset = LrBackupOffset;
 

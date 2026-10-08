@@ -151,7 +151,7 @@ fn describe(addr: u64) -> Option<String> {
     None
 }
 
-fn annotate(addr: u64) -> String {
+pub(crate) fn annotate(addr: u64) -> String {
     match describe(addr) {
         Some(desc) => format!("{:#018x} ({})", addr, desc),
         None => format!("{:#018x}", addr),

@@ -310,7 +310,7 @@ namespace exl::hook::nx64 {
 
             intptr_t current_idx = ctxp->get_and_set_current_index(*inprxp, *outprx);
             int64_t absolute_addr =
-                reinterpret_cast<int64_t>(*inprxp) + ((static_cast<int32_t>(ins << msb) >> (msb + lsb - 2u)) & ~3u);
+                reinterpret_cast<int64_t>(*inprxp) + static_cast<int64_t>((static_cast<int32_t>(ins << msb) >> (msb + lsb - 2u)) & ~3);
             int64_t new_pc_offset = static_cast<int64_t>(absolute_addr - reinterpret_cast<int64_t>(*outprx)) >> 2;  // shifted
             bool special_fix_type = ctxp->is_in_fixing_range(absolute_addr);
             // special_fix_type may encounter issue when there are mixed data and code
@@ -372,7 +372,7 @@ namespace exl::hook::nx64 {
                     current_idx = ctxp->get_and_set_current_index(*inprxp, *outprx);
                     int64_t lsb_bytes = static_cast<uint32_t>(ins << 1u) >> 30u;
                     int64_t absolute_addr = reinterpret_cast<int64_t>(*inprxp) +
-                                            (((static_cast<int32_t>(ins << msb) >> (msb + lsb - 2u)) & ~3u) | lsb_bytes);
+                                            (static_cast<int64_t>((static_cast<int32_t>(ins << msb) >> (msb + lsb - 2u)) & ~3) | lsb_bytes);
                     int64_t new_pc_offset = static_cast<int64_t>(absolute_addr - reinterpret_cast<int64_t>(*outprx));
                     bool special_fix_type = ctxp->is_in_fixing_range(absolute_addr);
                     if (!special_fix_type && llabs(new_pc_offset) >= (max_val >> 1)) {
@@ -410,7 +410,7 @@ namespace exl::hook::nx64 {
                     int32_t lsb_bytes = static_cast<uint32_t>(ins << 1u) >> 30u;
                     int64_t absolute_addr =
                         (reinterpret_cast<int64_t>(*inprxp) & ~0xfffll) +
-                        ((((static_cast<int32_t>(ins << msb) >> (msb + lsb - 2u)) & ~3u) | lsb_bytes) << 12);
+                        (static_cast<int64_t>(((static_cast<int32_t>(ins << msb) >> (msb + lsb - 2u)) & ~3) | lsb_bytes) * 4096);
                     if (ctxp->is_in_fixing_range(absolute_addr)) {
                         intptr_t ref_idx = ctxp->get_ref_ins_index(absolute_addr /* & ~3ull*/);
                         if (ref_idx > current_idx) {
@@ -466,6 +466,22 @@ namespace exl::hook::nx64 {
 
             uint32_t* const outprx_base = outrxp;
             uint32_t* const outprw_base = outrwp;
+
+            // The function is already hooked with the far form: `[NOP] LDR X17, #8; BR X17; .quad target`.
+            // Copy that patch as-is (minus the alignment NOP): the LDR's literal is relative to itself and
+            // the BR never falls through, so the two .quad words are data and must not be decoded as
+            // instructions below. Decoding them is a per-boot lottery on the earlier callback's address:
+            // a low word that looks like an LDR-literal makes __fix_loadlit copy from a garbage address
+            {
+                const int32_t skip = (inprw[0] == Aarch64Nop) ? 1 : 0;
+                if (count >= skip + 4 && inprw[skip] == 0x58000051u && inprw[skip + 1] == 0xd61f0220u) {
+                    for (int32_t i = 0; i < 4; ++i) {
+                        outrwp[i] = inprw[skip + i];
+                    }
+                    __flush_cache(outprw_base, 4 * sizeof(uint32_t));
+                    return;
+                }
+            }
 
             while (--count >= 0) {
                 if (__fix_branch_imm(&inprw, &inprx, &outrwp, &outrxp, &ctx)) continue;
@@ -526,7 +542,7 @@ namespace exl::hook::nx64 {
         static volatile s32 index = -1;
 
         uint32_t i = __atomic_increase(&index);
-        
+
         if(i >= HookMax)
             return result::HookTrampolineAllocFail;
 
@@ -540,7 +556,7 @@ namespace exl::hook::nx64 {
 
     //-------------------------------------------------------------------------
 
-    static bool HookFuncImpl(void* const symbol, void* const replace, void* const rxtr, void* const rwtr) {
+    static bool HookFuncImpl(void* const symbol, void* const replace, void* const rxtr, void* const rwtr, bool allow_near) {
         static constexpr uint_fast64_t mask = 0x03ffffffu;  // 0b00000011111111111111111111111111
 
         uint32_t *rxtrampoline = static_cast<uint32_t*>(rxtr), *rwtrampoline = static_cast<uint32_t*>(rwtr),
@@ -548,7 +564,16 @@ namespace exl::hook::nx64 {
 
         static_assert(MaxInstructions >= 5, "please fix MaxInstructions!");
         auto pc_offset = static_cast<int64_t>(__intval(replace) - __intval(symbol)) >> 2;
-        if (llabs(pc_offset) >= (mask >> 1)) {
+        // Function hooks always use the 4/5-word `LDR X17, #8; BR X17; .quad` form, even when
+        // `replace` is within B range (ozone itself always is, living next to nnSdk). A 1-word
+        // near `B` hook breaks as soon as anything else hooks the same function with the far
+        // form: its trampoline returns to `symbol + 4`, which is then the second hook's `BR X17`,
+        // and the two hooks recurse until the thread's stack is gone. Two far hooks coexist
+        // because the second one relocates the first one's `LDR X17` literal and returns to
+        // `symbol + 16`. Inline hooks keep the 1-word form when in range: their sites are
+        // mid-function and callers (ARCropolis's res-loading-thread hooks) rely on only one
+        // instruction being replaced -- a 4-word patch there lands on neighbouring branch targets.
+        if (!allow_near || llabs(pc_offset) >= (mask >> 1)) {
             const util::RwPages ctrl((uintptr_t)original, 5 * sizeof(uint32_t));
 
             int32_t count = (reinterpret_cast<uint64_t>(original + 2) & 7u) != 0u ? 5 : 4;
@@ -589,8 +614,8 @@ namespace exl::hook::nx64 {
         return true;
     }
 
-    uintptr_t Hook(uintptr_t hook, uintptr_t callback, bool do_trampoline) {
-        
+    uintptr_t Hook(uintptr_t hook, uintptr_t callback, bool do_trampoline, bool allow_near) {
+
         EXL_ASSERT(hook != 0);
         EXL_ASSERT(callback != 0);
 
@@ -598,10 +623,10 @@ namespace exl::hook::nx64 {
 
         u32* rxtrampoline = NULL;
         u32* rwtrampoline = NULL;
-        if (do_trampoline) 
+        if (do_trampoline)
             R_ABORT_UNLESS(AllocForTrampoline(&rxtrampoline, &rwtrampoline));
 
-        if (!HookFuncImpl(reinterpret_cast<void*>(hook), reinterpret_cast<void*>(callback), rxtrampoline, rwtrampoline))
+        if (!HookFuncImpl(reinterpret_cast<void*>(hook), reinterpret_cast<void*>(callback), rxtrampoline, rwtrampoline, allow_near))
             EXL_ABORT(exl::result::HookFailed);
 
         s_HookJit.Flush();

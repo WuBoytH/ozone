@@ -222,7 +222,7 @@ impl NroFile {
                 image_ptr as _,
                 bss_memory as _,
                 bss_size as u64,
-                nn::ro::BindFlag_BindFlag_Lazy as i32
+                nn::ro::BindFlag_BindFlag_Now as i32
             );
 
             if rc != 0 {

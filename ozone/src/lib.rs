@@ -98,6 +98,46 @@ pub fn ro_initialize_hook() -> i32 {
     }
 }
 
+// Diagnostics (disabled): log every module nn::ro loads/unloads with its address range.
+// /// Module name as the game (or ozone's loader) wrote it into `nn::ro::Module::Name`.
+// unsafe fn ro_module_name(module: *const nn::ro::Module) -> String {
+//     let name = &(*module).Name;
+//     let len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+//     String::from_utf8_lossy(&name[..len]).into_owned()
+// }
+//
+// /// Diagnostic: every module nn::ro loads (the game's lua2cpp .nros as well as ozone's plugins)
+// /// with its final address range, so hook targets in reports can be attributed.
+// #[skyline::hook(replace = nn::ro::LoadModule)]
+// pub unsafe fn ro_load_module_hook(module: *mut nn::ro::Module, image: *const u8, buffer: *mut u8, buffer_size: usize, flag: i32) -> u32 {
+//     // NRO header: total image size at +0x18. Read it now: LoadModule moves the image pages into
+//     // the code region, so `image` is unmapped once it returns.
+//     let size = (image.add(0x18) as *const u32).read_unaligned() as u64;
+//
+//     let rc = call_original!(module, image, buffer, buffer_size, flag);
+//
+//     if rc == 0 {
+//         let base = (*(*module).ModuleObject).module_base as u64;
+//         println!(
+//             "[ozone] nn::ro::LoadModule({}): {:#x}..{:#x} (image {:#x}, bss {:#x} bytes, flag {})",
+//             ro_module_name(module), base, base + size, image as u64, buffer_size, flag
+//         );
+//     } else {
+//         println!("[ozone] nn::ro::LoadModule({}) failed: {:#x}", ro_module_name(module), rc);
+//     }
+//
+//     rc
+// }
+//
+// #[skyline::hook(replace = nn::ro::UnloadModule)]
+// pub unsafe fn ro_unload_module_hook(module: *mut nn::ro::Module) -> u32 {
+//     let name = ro_module_name(module);
+//     let base = (*(*module).ModuleObject).module_base as u64;
+//     let rc = call_original!(module);
+//     println!("[ozone] nn::ro::UnloadModule({}) from {:#x}: {:#x}", name, base, rc);
+//     rc
+// }
+
 #[skyline::hook(replace = skyline::nn::fs::MountRom)]
 pub fn mount_rom_hook(name: *const c_char, buffer: *const u8, buf_size: usize) -> i32 {
     let _ = unsafe { nn::fs::MountSdCardForDebug(skyline::c_str("sd\0")) };
@@ -231,7 +271,7 @@ pub fn main() {
 
     crash::install();
 
-    skyline::install_hooks!(mount_rom_hook, socket_initialize_hook, socket_initialize_config_hook, socket_finalize_hook, ro_initialize_hook);
+    skyline::install_hooks!(mount_rom_hook, socket_initialize_hook, socket_initialize_config_hook, socket_finalize_hook, ro_initialize_hook /*, ro_load_module_hook, ro_unload_module_hook */);
 
     println!("Ozone is installed and running!");
 }
