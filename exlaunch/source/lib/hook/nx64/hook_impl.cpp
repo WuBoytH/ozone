@@ -222,7 +222,13 @@ namespace exl::hook::nx64 {
             }      // if
 
             intptr_t current_idx = ctxp->get_and_set_current_index(*inprxp, *outprx);
-            int64_t absolute_addr = reinterpret_cast<int64_t>(*inprxp) + ((ins & ~lmask) >> (lsb - 2u));
+            // The immediate is signed (imm19 for b.cond/cbz/cbnz at bits 23:5, imm14 for tbz/tbnz at bits 18:5).
+            // Shift it up to bit 31 and arithmetic-shift back down so backward branches keep their sign;
+            // the unsigned form the upstream And64InlineHook used sent backward branches to hook+0x1ffxxx.
+            const uint32_t imm_msb = (lmask == lmask2) ? 18u : 23u;
+            const int64_t branch_offset =
+                static_cast<int64_t>(static_cast<int32_t>(ins << (31u - imm_msb)) >> (31u - imm_msb + lsb - 2u)) & ~3;
+            int64_t absolute_addr = reinterpret_cast<int64_t>(*inprxp) + branch_offset;
             int64_t new_pc_offset = static_cast<int64_t>(absolute_addr - reinterpret_cast<int64_t>(*outprx)) >> 2;  // shifted
             bool special_fix_type = ctxp->is_in_fixing_range(absolute_addr);
             if (!special_fix_type && llabs(new_pc_offset) >= (~lmask >> (lsb + 1))) {
